@@ -178,3 +178,7 @@ temp/
 # Cache
 .cache/
 *.cache
+
+
+# Google Earth Engine
+keys/gee-key.json
