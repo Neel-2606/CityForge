@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database with PostGIS extension
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: urban_resilience_db
+    environment:
+      POSTGRES_DB: urban_resilience
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - urban_resilience_network
+
+  # Redis for caching (optional)
+  redis:
+    image: redis:7-alpine
+    container_name: urban_resilience_cache
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - urban_resilience_network
+
+  # Urban Resilience Backend API
+  backend:
+    build: .
+    container_name: urban_resilience_backend
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/urban_resilience
+      - DEBUG=True
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - urban_resilience_network
+    restart: unless-stopped
+
+  # Data ingestion worker (optional background service)
+  data_worker:
+    build: .
+    container_name: urban_resilience_worker
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/urban_resilience
+      - WORKER_MODE=true
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python -m scripts.data_ingestion_worker
+    networks:
+      - urban_resilience_network
+    restart: unless-stopped
+
+  # Nginx reverse proxy (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: urban_resilience_proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - backend
+    networks:
+      - urban_resilience_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  urban_resilience_network:
+    driver: bridge
